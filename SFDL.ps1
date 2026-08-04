@@ -4,15 +4,15 @@
     SFDL.PS - Simple FTP Download Manager (PowerShell-Port)
 
 .DESCRIPTION
-    Ein-Datei-Port von SFDL.PS 3: SFDL v2/v3 laden, AES-entschlüsseln,
+    Ein-Datei-Port von SFDL.PS 3: SFDL v2/v3 laden, AES-entschluesseln,
     per FTP (Resume, Multi-Thread) herunterladen, Blacklist, optional UnRAR, Speedreport.
 
 .PARAMETER SfdlFile
-    Pfad zur .sfdl-Datei (auch als Positionsargument möglich).
+    Pfad zur .sfdl-Datei (auch als Positionsargument moeglich).
 
 .PARAMETER Password
-    Passwort für verschlüsselte Container.
-    Ohne Angabe werden Passwörter aus passwords.txt neben dem Skript versucht.
+    Passwort fuer verschluesselte Container.
+    Ohne Angabe werden Passwoerter aus passwords.txt neben dem Skript versucht.
 
 .PARAMETER DownloadDirectory
     Zielverzeichnis (Standard: %USERPROFILE%\Downloads).
@@ -21,7 +21,7 @@
     Maximale parallele Downloads (Standard: aus Container oder 3).
 
 .PARAMETER Overwrite
-    Vorhandene Dateien überschreiben statt fortsetzen.
+    Vorhandene Dateien ueberschreiben statt fortsetzen.
 
 .PARAMETER PackageSubfolder
     Pro Package einen Unterordner anlegen.
@@ -31,7 +31,7 @@
 
 .PARAMETER DeleteAfterUnRar
     Veraltet: Nach erfolgreichem Entpacken werden Archivdateien
-    (RAR-Kette / ZIP) automatisch gelöscht.
+    (RAR-Kette / ZIP) automatisch geloescht.
 
 .PARAMETER UnrarPath
     Pfad zu unrar.exe (Standard: Suche im PATH / neben dem Skript).
@@ -40,7 +40,7 @@
     RAR-Passwort (sonst Passwortliste / interaktiv).
 
 .PARAMETER IncludeMalicious
-    Auch potenziell schädliche Dateien (Blacklist) herunterladen.
+    Auch potenziell schaedliche Dateien (Blacklist) herunterladen.
 
 .PARAMETER ListOnly
     Nur Dateiliste anzeigen, nicht herunterladen.
@@ -149,7 +149,7 @@ $script:SfdlRunspacePool = $null
 $script:SfdlCancelHandler = $null
 $script:SfdlAborting = $false
 
-# Globaler Session-State für PowerShell.Exiting (Action läuft isoliert, sieht $script: nicht)
+# Globaler Session-State fuer PowerShell.Exiting (Action laeuft isoliert, sieht $script: nicht)
 $global:SfdlSessionState = [hashtable]::Synchronized(@{
     CancelEvent    = $script:SfdlCancelEvent
     ActiveRequests = $script:SfdlActiveRequests
@@ -221,7 +221,7 @@ public static class SfdlNativeCancel {
     }
 
     static void OnCancel(object sender, ConsoleCancelEventArgs e) {
-        // Prozess nicht beenden; Hauptthread räumt über das Event auf.
+        // Prozess nicht beenden; Hauptthread raeumt ueber das Event auf.
         e.Cancel = true;
         var g = _gate;
         if (g != null) {
@@ -239,8 +239,8 @@ function Request-SfdlCancel {
     try { $script:SfdlCancelEvent.Set() } catch { }
     try { [SfdlNativeCancel]::SetGate($script:SfdlCancelEvent) } catch { }
 
-    # Nur FTP-Requests abbrechen, damit blockierende Reads sofort zurückkehren.
-    # RunspacePool/Pipes schließt ausschließlich der Hauptthread im finally.
+    # Nur FTP-Requests abbrechen, damit blockierende Reads sofort zurueckkehren.
+    # RunspacePool/Pipes schliesst ausschliesslich der Hauptthread im finally.
     foreach ($key in @($script:SfdlActiveRequests.Keys)) {
         $req = $script:SfdlActiveRequests[$key]
         if ($null -ne $req) {
@@ -256,7 +256,7 @@ function Register-SfdlCancelHandler {
         $script:SfdlCancelHandler = $true
     }
     catch {
-        # ISE / Hosts ohne Konsole: Abbruch über CancelEvent / PipelineStopped
+        # ISE / Hosts ohne Konsole: Abbruch ueber CancelEvent / PipelineStopped
         $script:SfdlCancelHandler = $null
     }
 }
@@ -265,7 +265,7 @@ function Complete-SfdlScript {
     param([int]$ExitCode = 0)
     try { $global:LASTEXITCODE = $ExitCode } catch { }
 
-    # 130 = Benutzerabbruch: niemals exit - das schließt interaktive Sessions.
+    # 130 = Benutzerabbruch: niemals exit - das schliesst interaktive Sessions.
     if ($ExitCode -eq 130) { return }
 
     # Andere Fehlercodes nur bei Non-Interactive an den Prozess durchreichen.
@@ -315,7 +315,7 @@ function Clear-SfdlDownloadSession {
     }
 }
 
-# Bei Host-/Skriptende ebenfalls alles stoppen (über $global:SfdlSessionState)
+# Bei Host-/Skriptende ebenfalls alles stoppen (ueber $global:SfdlSessionState)
 Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action {
     try {
         $state = $global:SfdlSessionState
@@ -372,16 +372,6 @@ public static extern bool WriteConsoleW(System.IntPtr hConsoleOutput, string lpB
 '@ -ErrorAction Stop
     }
     catch { }
-}
-
-function Test-SfdlScriptEncoding {
-    # PowerShell 5.1 liest .ps1 ohne UTF-8-BOM als System-ANSI (CP1252).
-    # Dann wird UTF-8 "oe" zu zwei Zeichen (Mojibake). Canary muss U+00F6 sein.
-    $canary = "ö"
-    if ($canary.Length -ne 1 -or [int][char]$canary[0] -ne 0x00F6) {
-        $cps = [string]::Join(',', ($canary.ToCharArray() | ForEach-Object { 'U+{0:X4}' -f [int]$_ }))
-        throw ("SFDL.ps1 wurde nicht als UTF-8 geladen. Unter Windows PowerShell 5.1 muss die Datei als UTF-8 MIT BOM gespeichert sein. Aktuell: Length={0}, Codepoint(s)={1}" -f $canary.Length, $cps)
-    }
 }
 
 function Initialize-SfdlConsoleEncoding {
@@ -466,7 +456,7 @@ function Write-SfdlHostLine {
     if ($null -eq $Text) { $Text = '' }
     $line = $Text + [Environment]::NewLine
 
-    # 1) Echte Konsole: WriteConsoleW (UTF-16) - unabhängig von OEM/ANSI-Codepage
+    # 1) Echte Konsole: WriteConsoleW (UTF-16) - unabhaengig von OEM/ANSI-Codepage
     if ($script:SfdlHasRealConsole -and $script:SfdlStdOutHandle -ne [IntPtr]::Zero -and ('SfdlNative.ConsoleIo' -as [type])) {
         $prev = $null
         try {
@@ -781,7 +771,7 @@ function ConvertFrom-SfdlSslProtocol {
         # v2 EncryptionMode -> v3 SSLProtocol mapping (Converter.vb)
         switch ($Value) {
             'Implicit' { return 'Tls' }   # FtpES
-            'Explicit' { return 'Tls' }   # früher Ssl3 - auf modernen Windows-Systemen tot
+            'Explicit' { return 'Tls' }   # frueher Ssl3 - auf modernen Windows-Systemen tot
             default    { return 'None' }
         }
     }
@@ -850,10 +840,10 @@ function Read-SfdlContainer {
     Write-SfdlLog INFO "SFDL-Version: $version"
 
     if ($version -eq 0 -or $version -gt 10) {
-        throw "Ungültige oder nicht unterstützte SFDL-Version: $version"
+        throw "Ung$([char]0x00FC)ltige oder nicht unterst$([char]0x00FC)tzte SFDL-Version: $version"
     }
     if ($version -ge 1 -and $version -le 5) {
-        throw "SFDL v1 (Version $version) wird nicht unterstützt."
+        throw "SFDL v1 (Version $version) wird nicht unterst$([char]0x00FC)tzt."
     }
 
     $isV2 = ($version -ge 6 -and $version -le 9)
@@ -1126,7 +1116,7 @@ function Test-FtpPort {
 function Parse-FtpListLine {
     <#
     .SYNOPSIS
-        Parst Unix/Windows LIST-Zeilen und liefert Name, Typ, Größe.
+        Parst Unix/Windows LIST-Zeilen und liefert Name, Typ, Groesse.
     #>
     param(
         [string]$Line,
@@ -1295,7 +1285,7 @@ function Expand-SfdlBulkFolders {
     $bulkPackages = @($Container.Packages | Where-Object { $_.BulkFolderMode })
     if ($bulkPackages.Count -eq 0) { return }
 
-    Write-SfdlLog INFO "Bulk-Folder-Modus: rekursives Listing für $($bulkPackages.Count) Package(s)..."
+    Write-SfdlLog INFO "Bulk-Folder-Modus: rekursives Listing f$([char]0x00FC)r $($bulkPackages.Count) Package(s)..."
     if (-not (Test-FtpPort -HostName $Container.Connection.Host -Port $Container.Connection.Port)) {
         throw "FTP-Port $($Container.Connection.Host):$($Container.Connection.Port) nicht erreichbar."
     }
@@ -1318,7 +1308,7 @@ function Expand-SfdlBulkFolders {
 # ---------------------------------------------------------------------------
 function ConvertTo-SfdlBlacklistRegex {
     param([string]$Pattern)
-    # Explizite Regex (Anker): unverändert; sonst Literal (Punkte etc. escapen)
+    # Explizite Regex (Anker): unveraendert; sonst Literal (Punkte etc. escapen)
     if ($Pattern.StartsWith('^') -or $Pattern.EndsWith('$')) {
         return $Pattern
     }
@@ -1384,7 +1374,7 @@ function Get-DownloadLocalPath {
 
     $localPath = Join-Path $dir (Sanitize-FileName $Item.FileName)
     if (-not (Test-SfdlLocalPathUnderRoot -LocalRoot $LocalRoot -CandidatePath $localPath)) {
-        throw "Lokaler Pfad außerhalb des Download-Roots abgelehnt: $localPath"
+        throw "Lokaler Pfad au$([char]0x00DF)erhalb des Download-Roots abgelehnt: $localPath"
     }
     return $localPath
 }
@@ -1490,7 +1480,7 @@ function Test-SfdlFileHash {
         default        { $null }
     }
     if (-not $algoName) {
-        Write-SfdlLog WARN "Unbekannter HashType '$HashType' - Prüfung übersprungen."
+        Write-SfdlLog WARN "Unbekannter HashType '$HashType' - Pr$([char]0x00FC)fung $([char]0x00FC)bersprungen."
         return $true
     }
 
@@ -1532,7 +1522,7 @@ function Invoke-FtpFileDownload {
 
     $remotePath = $Item.FullPath
     if ([string]::IsNullOrWhiteSpace($remotePath)) {
-        throw "Kein FullPath für $($Item.FileName)"
+        throw "Kein FullPath f$([char]0x00FC)r $($Item.FileName)"
     }
 
     $localDir = Split-Path -Parent $Item.LocalFile
@@ -1562,7 +1552,7 @@ function Invoke-FtpFileDownload {
             }
         }
         elseif ($Item.FileSize -gt 0 -and $existing -gt $Item.FileSize) {
-            # Lokale Datei größer als erwartet -> neu beginnen
+            # Lokale Datei groesser als erwartet -> neu beginnen
             $restart = 0L
             $fileMode = [IO.FileMode]::Create
             $Item.SizeDownloaded = 0
@@ -1573,7 +1563,7 @@ function Invoke-FtpFileDownload {
             $Item.SizeDownloaded = $existing
         }
         elseif ($Item.FileSize -eq 0 -and $existing -gt 0) {
-            # Unbekannte Remote-Größe: kein Resume (REST unsicher -> Duplikat-Risiko)
+            # Unbekannte Remote-Groesse: kein Resume (REST unsicher -> Duplikat-Risiko)
             $restart = 0L
             $fileMode = [IO.FileMode]::Create
             $Item.SizeDownloaded = 0
@@ -1643,14 +1633,14 @@ function Invoke-FtpFileDownload {
             $Item.Status = 'Failed'
             $Item.BytesPerSecond = 0
             $Item.Speed = ''
-            throw ("Größenmismatch: erwartet {0}, erhalten {1}" -f $Item.FileSize, $Item.SizeDownloaded)
+            throw ("Gr$([char]0x00F6)$([char]0x00DF)enmismatch: erwartet {0}, erhalten {1}" -f $Item.FileSize, $Item.SizeDownloaded)
         }
 
         if (-not (Test-SfdlFileHash -FilePath $Item.LocalFile -HashType $Item.HashType -ExpectedHash $Item.FileHash)) {
             $Item.Status = 'Failed'
             $Item.BytesPerSecond = 0
             $Item.Speed = ''
-            throw ("Hash-Prüfung fehlgeschlagen ({0})" -f $Item.HashType)
+            throw ("Hash-Pr$([char]0x00FC)fung fehlgeschlagen ({0})" -f $Item.HashType)
         }
 
         $Item.Status = 'Completed'
@@ -1728,7 +1718,7 @@ function Write-SfdlDownloadProgress {
     $width = Get-ConsoleLineWidth
     $barWidth = [Math]::Max(10, [Math]::Min(40, $width - 20))
 
-    # Cursor zurücksetzen, damit die Anzeige live überschrieben wird
+    # Cursor zuruecksetzen, damit die Anzeige live ueberschrieben wird
     if ($DashboardLines -gt 0) {
         try {
             $pos = $Host.UI.RawUI.CursorPosition
@@ -1768,7 +1758,7 @@ function Write-SfdlDownloadProgress {
 
     $maxActiveLines = 8
     if ($active.Count -eq 0) {
-        $msg = if ($Final) { ' Keine aktiven Downloads.' } else { ' Warte auf nächste Datei...' }
+        $msg = if ($Final) { ' Keine aktiven Downloads.' } else { ((' Warte auf n' + ([char]0x00E4) + 'chste Datei...')) }
         Write-ConsoleLinePadded $msg ([ConsoleColor]::DarkGray)
         $linesWritten++
     }
@@ -1799,7 +1789,7 @@ function Write-SfdlDownloadProgress {
     Write-ConsoleLinePadded $sep ([ConsoleColor]::DarkCyan)
     $linesWritten++
 
-    # Überzählige Zeilen der vorherigen Darstellung löschen
+    # Ueberzaehlige Zeilen der vorherigen Darstellung loeschen
     if ($DashboardLines -gt $linesWritten) {
         for ($i = 0; $i -lt ($DashboardLines - $linesWritten); $i++) {
             Write-ConsoleLinePadded '' ([ConsoleColor]::Gray)
@@ -1836,7 +1826,7 @@ function Start-SfdlDownloads {
 
     $total = $tracked.Count
     if ($total -eq 0) {
-        Write-SfdlLog WARN 'Keine Dateien zum Download ausgewählt.'
+        Write-SfdlLog WARN (('Keine Dateien zum Download ausgew' + ([char]0x00E4) + 'hlt.'))
         return $true
     }
 
@@ -1851,7 +1841,7 @@ function Start-SfdlDownloads {
         $total, (Format-ByteSize $totalBytes), $MaxThreads)
     Write-SfdlLog INFO 'Abbruch mit STRG+C stoppt alle Downloads.'
 
-    # Session-Abbruch zurücksetzen
+    # Session-Abbruch zuruecksetzen
     $script:SfdlAborting = $false
     try {
         $script:SfdlCancelEvent.Reset()
@@ -1972,7 +1962,7 @@ function Invoke-FtpFileDownload {
         throw 'DownloadCancelled'
     }
     `$remotePath = `$Item.FullPath
-    if ([string]::IsNullOrWhiteSpace(`$remotePath)) { throw "Kein FullPath für `$(`$Item.FileName)" }
+    if ([string]::IsNullOrWhiteSpace(`$remotePath)) { throw "Kein FullPath f$([char]0x00FC)r `$(`$Item.FileName)" }
     `$localDir = Split-Path -Parent `$Item.LocalFile
     if (-not (Test-Path -LiteralPath `$localDir)) { New-Item -ItemType Directory -Path `$localDir -Force | Out-Null }
     `$restart = 0L
@@ -2033,11 +2023,11 @@ function Invoke-FtpFileDownload {
         if (`$localStream) { `$localStream.Flush(); `$localStream.Dispose(); `$localStream = `$null }
         if (`$Item.FileSize -gt 0 -and `$Item.SizeDownloaded -ne `$Item.FileSize) {
             `$Item.Status = 'Failed'; `$Item.BytesPerSecond = 0; `$Item.Speed = ''
-            throw ("Größenmismatch: erwartet {0}, erhalten {1}" -f `$Item.FileSize, `$Item.SizeDownloaded)
+            throw ("Gr$([char]0x00F6)$([char]0x00DF)enmismatch: erwartet {0}, erhalten {1}" -f `$Item.FileSize, `$Item.SizeDownloaded)
         }
         if (-not (Test-SfdlFileHash -FilePath `$Item.LocalFile -HashType `$Item.HashType -ExpectedHash `$Item.FileHash)) {
             `$Item.Status = 'Failed'; `$Item.BytesPerSecond = 0; `$Item.Speed = ''
-            throw ("Hash-Prüfung fehlgeschlagen ({0})" -f `$Item.HashType)
+            throw ("Hash-Pr$([char]0x00FC)fung fehlgeschlagen ({0})" -f `$Item.HashType)
         }
         `$Item.Status = 'Completed'; `$Item.Progress = 100; `$Item.BytesPerSecond = 0; `$Item.Speed = ''
     } catch {
@@ -2115,7 +2105,7 @@ function Invoke-FtpFileDownload {
                 }
                 try {
                     if ($attempt -gt 0) {
-                        # Abbruch auch während Retry-Wartezeit prüfen
+                        # Abbruch auch waehrend Retry-Wartezeit pruefen
                         if ($CancelEvent.Wait($RetryWait * 1000)) {
                             $stopped = $true
                             $item.Status = 'Stopped'
@@ -2157,7 +2147,7 @@ function Invoke-FtpFileDownload {
             finally { [System.Threading.Monitor]::Exit($Stats.Lock) }
         }
 
-        # Restliche Queue-Einträge als gestoppt markieren, wenn abgebrochen
+        # Restliche Queue-Eintraege als gestoppt markieren, wenn abgebrochen
         if ($CancelEvent.IsSet) {
             while ($true) {
                 $left = Get-SfdlSafeQueueItem -Queue $Queue
@@ -2262,7 +2252,7 @@ function Invoke-FtpFileDownload {
         }
     }
     finally {
-        # Sofort Handler entfernen, damit STRG+C während Cleanup die Session nicht zerlegt
+        # Sofort Handler entfernen, damit STRG+C waehrend Cleanup die Session nicht zerlegt
         Unregister-SfdlCancelHandler
 
         $prevEa = $ErrorActionPreference
@@ -2296,7 +2286,7 @@ function Invoke-FtpFileDownload {
 
             foreach ($w in $workers) {
                 try {
-                    # Nach Stop() kein EndInvoke - das hängt/crasht in PS 5.1 häufig.
+                    # Nach Stop() kein EndInvoke - das haengt/crasht in PS 5.1 haeufig.
                     # Stattdessen kurz auf Completion warten, dann Dispose.
                     if ($w.Handle -and -not $w.Handle.IsCompleted -and $w.Handle.AsyncWaitHandle) {
                         try { [void]$w.Handle.AsyncWaitHandle.WaitOne(500) } catch { }
@@ -2400,7 +2390,7 @@ function Get-UnrarChains {
     foreach ($it in @($Items)) {
         if ($null -eq $it) { continue }
 
-        # Verschachtelte Listen/Arrays (PowerShell-Unrolling) eine Ebene auflösen
+        # Verschachtelte Listen/Arrays (PowerShell-Unrolling) eine Ebene aufloesen
         $hasFileName = Test-SfdlHasProperty -Object $it -Name 'FileName'
         if (-not $hasFileName -and $it -is [System.Collections.IEnumerable] -and $it -isnot [string]) {
             foreach ($inner in $it) {
@@ -2526,7 +2516,7 @@ function Invoke-SfdlExternalProcess {
     $pinfo.CreateNoWindow = $true
     if ($OutputEncoding) {
         $pinfo.StandardOutputEncoding = $OutputEncoding
-        # StandardErrorEncoding erst ab .NET Core - unter Framework überspringen
+        # StandardErrorEncoding erst ab .NET Core - unter Framework ueberspringen
         $errEncProp = $pinfo.GetType().GetProperty('StandardErrorEncoding')
         if ($errEncProp -and $errEncProp.CanWrite) {
             $errEncProp.SetValue($pinfo, $OutputEncoding, $null)
@@ -2575,7 +2565,7 @@ function Test-SfdlArchiveEntriesSafe {
         if ([string]::IsNullOrWhiteSpace($name)) { continue }
         $entry = $name.Trim()
         if (-not (Test-SfdlExtractPathSafe -ExtractDir $ExtractDir -EntryName $entry)) {
-            Write-SfdlLog WARN "Archiv-Eintrag außerhalb Zielverzeichnis: $entry"
+            Write-SfdlLog WARN "Archiv-Eintrag au$([char]0x00DF)erhalb Zielverzeichnis: $entry"
             return $false
         }
     }
@@ -2658,7 +2648,7 @@ function Invoke-UnrarExtract {
     }
 
     $archiveArg = Escape-SfdlProcessArgument $ArchivePath
-    # Trailing separator: sonst kann UnRAR den letzten Pfadteil als Namenspräfix werten
+    # Trailing separator: sonst kann UnRAR den letzten Pfadteil als Namenspraefix werten
     $extractTarget = $ExtractDir.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
     $dirArg = Escape-SfdlProcessArgument $extractTarget
     if ([string]::IsNullOrWhiteSpace($Password)) {
@@ -2716,7 +2706,7 @@ function Invoke-SevenZipExtract {
 
     $sevenZip = Find-SevenZipExecutable
     if (-not $sevenZip) {
-        Write-SfdlLog WARN "7za/7z nicht gefunden - übersprungen: $(Split-Path -Leaf $ArchivePath)"
+        Write-SfdlLog WARN "7za/7z nicht gefunden - $([char]0x00FC)bersprungen: $(Split-Path -Leaf $ArchivePath)"
         return $false
     }
 
@@ -2786,19 +2776,19 @@ function Invoke-ZipExtract {
     $fileName = Split-Path -Leaf $ArchivePath
     $isSplitZip = $fileName -match '(?i)\.zip\.\d+$'
 
-    # Mehrteilige 7-Zip-Volumes (.zip.001) und Passwort-ZIPs über 7za
+    # Mehrteilige 7-Zip-Volumes (.zip.001) und Passwort-ZIPs ueber 7za
     if ($ForceSevenZip -or $isSplitZip -or -not [string]::IsNullOrWhiteSpace($Password)) {
         return (Invoke-SevenZipExtract -ArchivePath $ArchivePath -ExtractDir $ExtractDir -Password $Password)
     }
 
-    # Ohne Passwort: Einträge einzeln und pfadsicher extrahieren (Zip-Slip-Schutz)
+    # Ohne Passwort: Eintraege einzeln und pfadsicher extrahieren (Zip-Slip-Schutz)
     try {
         Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
         $zip = [System.IO.Compression.ZipFile]::OpenRead($ArchivePath)
         try {
             foreach ($entry in $zip.Entries) {
                 if (-not (Test-SfdlExtractPathSafe -ExtractDir $ExtractDir -EntryName $entry.FullName)) {
-                    Write-SfdlLog WARN "ZIP-Eintrag außerhalb Zielverzeichnis übersprungen: $($entry.FullName)"
+                    Write-SfdlLog WARN "ZIP-Eintrag au$([char]0x00DF)erhalb Zielverzeichnis $([char]0x00FC)bersprungen: $($entry.FullName)"
                     continue
                 }
                 $target = Join-Path $ExtractDir $entry.FullName
@@ -2845,14 +2835,14 @@ function Remove-SfdlArchiveFiles {
                 }
             }
             if ($removed) {
-                Write-SfdlLog INFO "Archiv gelöscht: $($file.FileName)"
+                Write-SfdlLog INFO "Archiv gel$([char]0x00F6)scht: $($file.FileName)"
             }
             else {
-                Write-SfdlLog WARN "Archiv konnte nicht gelöscht werden: $($file.FileName)"
+                Write-SfdlLog WARN "Archiv konnte nicht gel$([char]0x00F6)scht werden: $($file.FileName)"
             }
         }
         catch {
-            Write-SfdlLog WARN "Archiv konnte nicht gelöscht werden ($($file.FileName)): $($_.Exception.Message)"
+            Write-SfdlLog WARN "Archiv konnte nicht gel$([char]0x00F6)scht werden ($($file.FileName)): $($_.Exception.Message)"
         }
     }
 }
@@ -2881,7 +2871,7 @@ function Expand-SfdlArchiveChain {
     }
     else {
         if (-not $UnrarExe) {
-            Write-SfdlLog WARN "unrar.exe fehlt - übersprungen: $name"
+            Write-SfdlLog WARN "unrar.exe fehlt - $([char]0x00FC)bersprungen: $name"
             return $false
         }
         foreach ($pw in $Passwords) {
@@ -2980,10 +2970,10 @@ function Start-SfdlUnrar {
     $rarChains = @($chains | Where-Object { (Test-SfdlHasProperty -Object $_ -Name 'Type') -and $_.Type -eq 'Rar' })
     $zipSplitChains = @($chains | Where-Object { (Test-SfdlHasProperty -Object $_ -Name 'Type') -and $_.Type -eq 'ZipSplit' })
     if ($rarChains.Count -gt 0 -and -not $UnrarExe) {
-        Write-SfdlLog WARN 'unrar.exe nicht gefunden - RAR-Entpacken übersprungen (ZIP wird trotzdem versucht).'
+        Write-SfdlLog WARN (('unrar.exe nicht gefunden - RAR-Entpacken ' + ([char]0x00FC) + 'bersprungen (ZIP wird trotzdem versucht).'))
     }
     if ($zipSplitChains.Count -gt 0 -and -not (Find-SevenZipExecutable)) {
-        Write-SfdlLog WARN '7za.exe nicht gefunden - mehrteilige ZIP-Archive (.zip.001) werden übersprungen.'
+        Write-SfdlLog WARN (('7za.exe nicht gefunden - mehrteilige ZIP-Archive (.zip.001) werden ' + ([char]0x00FC) + 'bersprungen.'))
     }
 
     if ($null -eq $chains -or $chains.Count -eq 0) {
@@ -2993,7 +2983,7 @@ function Start-SfdlUnrar {
         foreach ($chain in $chains) {
             if (-not (Test-SfdlHasProperty -Object $chain -Name 'Master')) { continue }
             if (-not (Test-UnrarChainComplete -Chain $chain)) {
-                Write-SfdlLog WARN "Archiv unvollständig: $($chain.Master.FileName)"
+                Write-SfdlLog WARN "Archiv unvollst$([char]0x00E4)ndig: $($chain.Master.FileName)"
                 continue
             }
             if (Expand-SfdlArchiveChain -Chain $chain -UnrarExe $UnrarExe -Passwords $passwords) {
@@ -3002,7 +2992,7 @@ function Start-SfdlUnrar {
         }
     }
 
-    # Verschachtelte Archive: nach dem Entpacken erneut scannen, entpacken, löschen
+    # Verschachtelte Archive: nach dem Entpacken erneut scannen, entpacken, loeschen
     $scanRoots = @()
     foreach ($r in @(Get-SfdlExtractScanRoots -Items $Items)) {
         $rootPath = [string]$r
@@ -3042,7 +3032,7 @@ function Start-SfdlUnrar {
             if (-not (Test-Path -LiteralPath $masterPath)) { continue }
 
             if (-not (Test-UnrarChainComplete -Chain $chain)) {
-                Write-SfdlLog WARN "Archiv unvollständig: $($chain.Master.FileName)"
+                Write-SfdlLog WARN "Archiv unvollst$([char]0x00E4)ndig: $($chain.Master.FileName)"
                 $failed[$masterPath] = $true
                 continue
             }
@@ -3119,7 +3109,6 @@ function Show-DownloadItemTable {
 
 try {
     Initialize-SfdlConsoleEncoding
-    Test-SfdlScriptEncoding
 
     $sfdlPath = (Resolve-Path -LiteralPath $SfdlFile).Path
     Write-SfdlLog INFO "SFDL.PS PowerShell - $sfdlPath"
@@ -3128,10 +3117,10 @@ try {
     $container = Read-SfdlContainer -Path $sfdlPath
 
     if ($container.Encrypted) {
-        Write-SfdlLog INFO 'Container ist verschlüsselt.'
+        Write-SfdlLog INFO (('Container ist verschl' + ([char]0x00FC) + 'sselt.'))
         $pw = Resolve-SfdlPassword -Container $container -ProvidedPassword $Password
         Decrypt-SfdlContainer -Container $container -Password $pw
-        Write-SfdlLog OK 'Container entschlüsselt.'
+        Write-SfdlLog OK (('Container entschl' + ([char]0x00FC) + 'sselt.'))
     }
 
     Write-SfdlLog INFO ("Host: {0}:{1}  User: {2}  Auth: {3}  SSL: {4}  Mode: {5}" -f `
@@ -3162,7 +3151,7 @@ try {
 
     $totalSize = 0L
     foreach ($it in $items) { $totalSize += [long]$it.FileSize }
-    Write-SfdlLog INFO ("{0} Datei(en), Gesamtgröße {1}, Download-Root: {2}" -f `
+    Write-SfdlLog INFO ("{0} Datei(en), Gesamtgr$([char]0x00F6)$([char]0x00DF)e {1}, Download-Root: {2}" -f `
         $items.Count, (Format-ByteSize $totalSize), $localRoot)
 
     Show-DownloadItemTable -Items $items
@@ -3211,17 +3200,17 @@ try {
     if ($failCount -eq 0 -and $okCount -gt 0) {
         try {
             Remove-Item -LiteralPath $sfdlPath -Force -ErrorAction Stop
-            Write-SfdlLog INFO 'SFDL-Datei gelöscht.'
+            Write-SfdlLog INFO (('SFDL-Datei gel' + ([char]0x00F6) + 'scht.'))
         }
         catch {
-            Write-SfdlLog WARN ("SFDL-Datei konnte nicht gelöscht werden: {0}" -f $_.Exception.Message)
+            Write-SfdlLog WARN ("SFDL-Datei konnte nicht gel$([char]0x00F6)scht werden: {0}" -f $_.Exception.Message)
         }
     }
     elseif ($okCount -eq 0) {
-        Write-SfdlLog WARN 'SFDL-Datei nicht gelöscht (keine erfolgreich verarbeiteten Dateien).'
+        Write-SfdlLog WARN (('SFDL-Datei nicht gel' + ([char]0x00F6) + 'scht (keine erfolgreich verarbeiteten Dateien).'))
     }
     else {
-        Write-SfdlLog WARN ("SFDL-Datei nicht gelöscht ({0} fehlgeschlagene Datei(en))." -f $failCount)
+        Write-SfdlLog WARN ("SFDL-Datei nicht gel$([char]0x00F6)scht ({0} fehlgeschlagene Datei(en))." -f $failCount)
     }
 
     Write-SfdlLog OK "Fertig. Erfolgreich: $okCount  Fehlgeschlagen: $failCount  Dauer: $(ConvertTo-Hms (($stopped - $started).TotalSeconds))"
