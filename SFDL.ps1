@@ -351,8 +351,79 @@ Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action {
 } | Out-Null
 
 # ---------------------------------------------------------------------------
-# Logging
+# Logging / Konsolen-Kodierung
 # ---------------------------------------------------------------------------
+function Initialize-SfdlConsoleEncoding {
+    # Sorgt dafür, dass Umlaute (ä/ö/ü/ß) auf Windows-Konsolen korrekt erscheinen.
+    # Ohne UTF-8-Codepage interpretieren viele Systeme die Ausgabe als OEM/ANSI.
+    $utf8 = New-Object System.Text.UTF8Encoding $false
+
+    try { [Console]::OutputEncoding = $utf8 } catch { }
+    try { [Console]::InputEncoding = $utf8 } catch { }
+    try { $script:OutputEncoding = $utf8 } catch { }
+    try { $global:OutputEncoding = $utf8 } catch { }
+    try { $OutputEncoding = $utf8 } catch { }
+
+    if (-not ('SfdlNative.SfdlConsoleCp' -as [type])) {
+        try {
+            Add-Type -Namespace SfdlNative -Name SfdlConsoleCp -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("kernel32.dll")]
+public static extern bool SetConsoleOutputCP(uint wCodePageID);
+[System.Runtime.InteropServices.DllImport("kernel32.dll")]
+public static extern bool SetConsoleCP(uint wCodePageID);
+'@ -ErrorAction Stop
+        }
+        catch { }
+    }
+
+    if ('SfdlNative.SfdlConsoleCp' -as [type]) {
+        try { [void][SfdlNative.SfdlConsoleCp]::SetConsoleOutputCP(65001) } catch { }
+        try { [void][SfdlNative.SfdlConsoleCp]::SetConsoleCP(65001) } catch { }
+    }
+
+    # PowerShell 6+: Datei-Cmdlets standardmäßig UTF-8
+    if ($PSVersionTable.PSVersion.Major -ge 6) {
+        try {
+            $PSDefaultParameterValues['Out-File:Encoding'] = 'utf8'
+            $PSDefaultParameterValues['Set-Content:Encoding'] = 'utf8'
+            $PSDefaultParameterValues['Add-Content:Encoding'] = 'utf8'
+            $PSDefaultParameterValues['Export-Csv:Encoding'] = 'utf8'
+        }
+        catch { }
+    }
+}
+
+function Write-SfdlHostLine {
+    param(
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$Text = '',
+        [ConsoleColor]$ForegroundColor = [ConsoleColor]::Gray
+    )
+
+    # Write-Host nutzt die Unicode-Host-API (WriteConsoleW) und stellt Umlaute
+    # unabhängig von der OEM-Codepage korrekt dar, sofern die Schriftart sie kann.
+    try {
+        Write-Host $Text -ForegroundColor $ForegroundColor
+        return
+    }
+    catch { }
+
+    try {
+        $prev = [Console]::ForegroundColor
+        try {
+            [Console]::ForegroundColor = $ForegroundColor
+            [Console]::Out.WriteLine($Text)
+        }
+        finally {
+            try { [Console]::ForegroundColor = $prev } catch { }
+        }
+    }
+    catch {
+        try { [Console]::WriteLine($Text) } catch { Write-Output $Text }
+    }
+}
+
 function Write-SfdlLog {
     param(
         [ValidateSet('INFO', 'WARN', 'ERROR', 'DEBUG', 'OK')]
@@ -363,14 +434,14 @@ function Write-SfdlLog {
     $text = ($Message | ForEach-Object { "$_" }) -join ' '
     $ts = Get-Date -Format 'HH:mm:ss'
     $color = switch ($Level) {
-        'INFO'  { 'Cyan' }
-        'WARN'  { 'Yellow' }
-        'ERROR' { 'Red' }
-        'DEBUG' { 'DarkGray' }
-        'OK'    { 'Green' }
-        default { 'White' }
+        'INFO'  { [ConsoleColor]::Cyan }
+        'WARN'  { [ConsoleColor]::Yellow }
+        'ERROR' { [ConsoleColor]::Red }
+        'DEBUG' { [ConsoleColor]::DarkGray }
+        'OK'    { [ConsoleColor]::Green }
+        default { [ConsoleColor]::White }
     }
-    Write-Host "[$ts][$Level] $text" -ForegroundColor $color
+    Write-SfdlHostLine -Text "[$ts][$Level] $text" -ForegroundColor $color
 }
 
 function Format-ByteSize {
@@ -418,8 +489,10 @@ function Get-ConsoleLineWidth {
 function Write-ConsoleLinePadded {
     param([string]$Text, [ConsoleColor]$ForegroundColor = [ConsoleColor]::Gray)
     $width = Get-ConsoleLineWidth
-    $line = if ($Text.Length -ge $width) { $Text.Substring(0, $width - 1) } else { $Text.PadRight($width - 1) }
-    Write-Host $line -ForegroundColor $ForegroundColor
+    $line = if ($null -eq $Text) { ''.PadRight([Math]::Max(0, $width - 1)) }
+            elseif ($Text.Length -ge $width) { $Text.Substring(0, [Math]::Max(1, $width - 1)) }
+            else { $Text.PadRight($width - 1) }
+    Write-SfdlHostLine -Text $line -ForegroundColor $ForegroundColor
 }
 
 # ---------------------------------------------------------------------------
@@ -2044,7 +2117,7 @@ function Invoke-FtpFileDownload {
         }
 
         $dashboardLines = 0
-        Write-Host ''
+        Write-SfdlHostLine -Text ''
 
         while ($true) {
             if ($cancelEvent.IsSet) {
@@ -2071,7 +2144,7 @@ function Invoke-FtpFileDownload {
                     for ($c = 0; $c -lt $dashboardLines; $c++) { Write-ConsoleLinePadded '' }
                     $dashboardLines = 0
                 }
-                Write-Host $logLine -ForegroundColor Red
+                Write-SfdlHostLine -Text $logLine -ForegroundColor ([ConsoleColor]::Red)
             }
 
             try {
@@ -2184,7 +2257,7 @@ function Invoke-FtpFileDownload {
         }
     }
 
-    Write-Host ''
+    Write-SfdlHostLine -Text ''
     $elapsedFinal = ConvertTo-Hms ((Get-Date) - $startedAt).TotalSeconds
     if ($wasCancelled) {
         Write-SfdlLog WARN ("Download abgebrochen nach {0}. Fertig: {1}, Gestoppt: {2}, Fehler: {3}" -f `
@@ -2713,9 +2786,10 @@ function Write-SfdlSpeedreport {
     $report = $report.Replace('%%SFDL_SIZE%%', "$sizeMb MB")
 
     $path = Join-Path $LocalRoot 'speedreport.txt'
-    [IO.File]::WriteAllText($path, $report, [Text.Encoding]::UTF8)
+    $utf8Bom = New-Object System.Text.UTF8Encoding $true
+    [IO.File]::WriteAllText($path, $report, $utf8Bom)
     Write-SfdlLog OK "Speedreport: $path"
-    Write-Host $report
+    Write-SfdlHostLine -Text $report -ForegroundColor ([ConsoleColor]::Gray)
 }
 
 # ---------------------------------------------------------------------------
@@ -2726,10 +2800,17 @@ function Show-DownloadItemTable {
     $Items | Select-Object PackageName, FileName,
         @{n='Size';e={ Format-ByteSize $_.FileSize }},
         Selected, Status, ExcludeReason, LocalFile |
-        Format-Table -AutoSize | Out-String | Write-Host
+        Format-Table -AutoSize | Out-String -Width ([Math]::Max(120, (Get-ConsoleLineWidth))) |
+        ForEach-Object {
+            foreach ($line in ($_ -split "`r?`n")) {
+                Write-SfdlHostLine -Text $line -ForegroundColor ([ConsoleColor]::Gray)
+            }
+        }
 }
 
 try {
+    Initialize-SfdlConsoleEncoding
+
     $sfdlPath = (Resolve-Path -LiteralPath $SfdlFile).Path
     Write-SfdlLog INFO "SFDL.PS PowerShell - $sfdlPath"
     Write-SfdlLog INFO "Zielverzeichnis: $DownloadDirectory"
