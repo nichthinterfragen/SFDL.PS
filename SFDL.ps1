@@ -354,35 +354,25 @@ Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action {
 # Logging / Konsolen-Kodierung
 # ---------------------------------------------------------------------------
 function Initialize-SfdlConsoleEncoding {
-    # Sorgt dafür, dass Umlaute (ä/ö/ü/ß) auf Windows-Konsolen korrekt erscheinen.
-    # Ohne UTF-8-Codepage interpretieren viele Systeme die Ausgabe als OEM/ANSI.
-    $utf8 = New-Object System.Text.UTF8Encoding $false
+    # Umlaute (ä/ö/ü/ß) korrekt ausgeben.
+    #
+    # Windows PowerShell 5.1: Die Konsole läuft typischerweise auf OEM (z. B. CP850)
+    # bzw. der Parent-Terminal decodiert Bytes als ANSI (CP1252). Wenn man hier
+    # OutputEncoding/Codepage auf UTF-8 (65001) umstellt, entstehen Mojibake wie
+    # "gelöscht" → "gelÃ¶scht", sobald die Ausgabe über den Byte-Stream geht
+    # (umgeleitete Hosts, ConPTY-Capture, Pipeline). Write-Host nutzt WriteConsoleW
+    # und rendert Unicode unabhängig von der OEM-Codepage korrekt – deshalb die
+    # aktive Codepage belassen und $OutputEncoding nur daran ausrichten.
+    #
+    # PowerShell 7+: UTF-8 ist der Standard und wird konsistent gesetzt.
 
-    try { [Console]::OutputEncoding = $utf8 } catch { }
-    try { [Console]::InputEncoding = $utf8 } catch { }
-    try { $script:OutputEncoding = $utf8 } catch { }
-    try { $global:OutputEncoding = $utf8 } catch { }
-    try { $OutputEncoding = $utf8 } catch { }
-
-    if (-not ('SfdlNative.SfdlConsoleCp' -as [type])) {
-        try {
-            Add-Type -Namespace SfdlNative -Name SfdlConsoleCp -MemberDefinition @'
-[System.Runtime.InteropServices.DllImport("kernel32.dll")]
-public static extern bool SetConsoleOutputCP(uint wCodePageID);
-[System.Runtime.InteropServices.DllImport("kernel32.dll")]
-public static extern bool SetConsoleCP(uint wCodePageID);
-'@ -ErrorAction Stop
-        }
-        catch { }
-    }
-
-    if ('SfdlNative.SfdlConsoleCp' -as [type]) {
-        try { [void][SfdlNative.SfdlConsoleCp]::SetConsoleOutputCP(65001) } catch { }
-        try { [void][SfdlNative.SfdlConsoleCp]::SetConsoleCP(65001) } catch { }
-    }
-
-    # PowerShell 6+: Datei-Cmdlets standardmäßig UTF-8
     if ($PSVersionTable.PSVersion.Major -ge 6) {
+        $utf8 = New-Object System.Text.UTF8Encoding $false
+        try { [Console]::OutputEncoding = $utf8 } catch { }
+        try { [Console]::InputEncoding = $utf8 } catch { }
+        try { $script:OutputEncoding = $utf8 } catch { }
+        try { $global:OutputEncoding = $utf8 } catch { }
+        try { $OutputEncoding = $utf8 } catch { }
         try {
             $PSDefaultParameterValues['Out-File:Encoding'] = 'utf8'
             $PSDefaultParameterValues['Set-Content:Encoding'] = 'utf8'
@@ -390,7 +380,17 @@ public static extern bool SetConsoleCP(uint wCodePageID);
             $PSDefaultParameterValues['Export-Csv:Encoding'] = 'utf8'
         }
         catch { }
+        return
     }
+
+    try {
+        $enc = [Console]::OutputEncoding
+        if ($null -eq $enc) { $enc = [Text.Encoding]::Default }
+        try { $script:OutputEncoding = $enc } catch { }
+        try { $global:OutputEncoding = $enc } catch { }
+        try { $OutputEncoding = $enc } catch { }
+    }
+    catch { }
 }
 
 function Write-SfdlHostLine {
@@ -2296,23 +2296,59 @@ function Find-UnrarExecutable {
     return $null
 }
 
+function Test-SfdlHasProperty {
+    param(
+        $Object,
+        [Parameter(Mandatory)]
+        [string]$Name
+    )
+    if ($null -eq $Object) { return $false }
+    try {
+        return ($Object.PSObject.Properties.Match($Name).Count -gt 0)
+    }
+    catch {
+        return $false
+    }
+}
+
 function Get-UnrarChains {
     param([System.Collections.IList]$Items)
 
+    # Flattern / filtern: nur echte Archiv-Items mit FileName (StrictMode-sicher)
+    $normalized = New-Object System.Collections.Generic.List[object]
+    foreach ($it in @($Items)) {
+        if ($null -eq $it) { continue }
+
+        # Verschachtelte Listen/Arrays (PowerShell-Unrolling) eine Ebene auflösen
+        $hasFileName = Test-SfdlHasProperty -Object $it -Name 'FileName'
+        if (-not $hasFileName -and $it -is [System.Collections.IEnumerable] -and $it -isnot [string]) {
+            foreach ($inner in $it) {
+                if ($null -ne $inner -and (Test-SfdlHasProperty -Object $inner -Name 'FileName')) {
+                    [void]$normalized.Add($inner)
+                }
+            }
+            continue
+        }
+
+        if ($hasFileName) {
+            [void]$normalized.Add($it)
+        }
+    }
+
     $chains = New-Object System.Collections.Generic.List[object]
-    $rars = @($Items | Where-Object {
-        ([IO.Path]::GetExtension($_.FileName)).Equals('.rar', [StringComparison]::OrdinalIgnoreCase)
+    $rars = @($normalized | Where-Object {
+        ([IO.Path]::GetExtension([string]$_.FileName)).Equals('.rar', [StringComparison]::OrdinalIgnoreCase)
     })
 
     foreach ($item in $rars) {
         if ($item.FileName -notmatch '\.part') {
             $base = [Regex]::Escape([IO.Path]::GetFileNameWithoutExtension($item.FileName))
             $pattern = "$base\.r[0-9]{1,2}"
-            $members = @($Items | Where-Object {
+            $members = @($normalized | Where-Object {
                 $_.PackageName -eq $item.PackageName -and $_.FileName -match $pattern
             })
             $item.FirstUnRarFile = $true
-            $chains.Add([pscustomobject]@{
+            [void]$chains.Add([pscustomobject]@{
                 Master  = $item
                 Members = $members
                 Type    = 'Rar'
@@ -2323,14 +2359,14 @@ function Get-UnrarChains {
             if ($item.FileName -match '^((?!\.part(?!0*1\.rar$)\d+\.rar$).)*\.(?:rar|r?0*1)$') {
                 $prefix = $item.FileName.Substring(0, $item.FileName.IndexOf('.part'))
                 $pattern = [Regex]::Escape($prefix) + '\.part[0-9]{1,3}\.rar'
-                $members = @($Items | Where-Object {
+                $members = @($normalized | Where-Object {
                     $_.PackageName -eq $item.PackageName -and
                     $_.FileName -ne $item.FileName -and
                     $_.FileName -match $pattern -and
                     $_.FileName.StartsWith($prefix)
                 })
                 $item.FirstUnRarFile = $true
-                $chains.Add([pscustomobject]@{
+                [void]$chains.Add([pscustomobject]@{
                     Master  = $item
                     Members = $members
                     Type    = 'Rar'
@@ -2339,17 +2375,40 @@ function Get-UnrarChains {
         }
     }
 
-    # Einzelne .zip-Dateien (keine .z01-Volumes)
-    $zips = @($Items | Where-Object {
-        ([IO.Path]::GetExtension($_.FileName)).Equals('.zip', [StringComparison]::OrdinalIgnoreCase) -and
-        $_.FileName -notmatch '(?i)\.z\d{2}$'
+    # Einzelne .zip-Dateien (keine .z01-Volumes, keine 7-Zip-Splits .zip.001)
+    $zips = @($normalized | Where-Object {
+        $fn = [string]$_.FileName
+        $fn -notmatch '(?i)\.zip\.\d+$' -and
+        ([IO.Path]::GetExtension($fn)).Equals('.zip', [StringComparison]::OrdinalIgnoreCase) -and
+        $fn -notmatch '(?i)\.z\d{2}$'
     })
     foreach ($item in $zips) {
         $item.FirstUnRarFile = $true
-        $chains.Add([pscustomobject]@{
+        [void]$chains.Add([pscustomobject]@{
             Master  = $item
             Members = @()
             Type    = 'Zip'
+        })
+    }
+
+    # 7-Zip Split-Volumes: name.zip.001, name.zip.002, ...
+    $splitMasters = @($normalized | Where-Object {
+        [string]$_.FileName -match '(?i)^.+\.zip\.0*1$'
+    })
+    foreach ($item in $splitMasters) {
+        if ([string]$item.FileName -notmatch '(?i)^(?<base>.+\.zip)\.(?<num>\d+)$') { continue }
+        $baseName = $Matches['base']
+        $memberPattern = '(?i)^' + [Regex]::Escape($baseName) + '\.(\d+)$'
+        $members = @($normalized | Where-Object {
+            $_.PackageName -eq $item.PackageName -and
+            $_.FileName -ne $item.FileName -and
+            ([string]$_.FileName -match $memberPattern)
+        })
+        $item.FirstUnRarFile = $true
+        [void]$chains.Add([pscustomobject]@{
+            Master  = $item
+            Members = $members
+            Type    = 'ZipSplit'
         })
     }
 
@@ -2545,20 +2604,74 @@ function Invoke-UnrarExtract {
 
 function Find-SevenZipExecutable {
     $candidates = @(
-        '7z.exe'
+        (Join-Path $PSScriptRoot '7za.exe')
+        (Join-Path $PSScriptRoot '7z.exe')
+        (Join-Path $PSScriptRoot 'bin\7za.exe')
+        (Join-Path $PSScriptRoot 'bin\7z.exe')
         '7za.exe'
+        '7z.exe'
         'C:\Program Files\7-Zip\7z.exe'
         'C:\Program Files (x86)\7-Zip\7z.exe'
     )
     foreach ($c in $candidates) {
         try {
+            if (Test-Path -LiteralPath $c) {
+                return (Resolve-Path -LiteralPath $c).Path
+            }
             $cmd = Get-Command $c -ErrorAction SilentlyContinue
             if ($cmd) { return $cmd.Source }
-            if (Test-Path -LiteralPath $c) { return $c }
         }
         catch { }
     }
     return $null
+}
+
+function Invoke-SevenZipExtract {
+    param(
+        [string]$ArchivePath,
+        [string]$ExtractDir,
+        [string]$Password = ''
+    )
+
+    $sevenZip = Find-SevenZipExecutable
+    if (-not $sevenZip) {
+        Write-SfdlLog WARN "7za/7z nicht gefunden - übersprungen: $(Split-Path -Leaf $ArchivePath)"
+        return $false
+    }
+
+    if (-not (Test-Path -LiteralPath $ExtractDir)) {
+        New-Item -ItemType Directory -Path $ExtractDir -Force | Out-Null
+    }
+
+    if ([string]::IsNullOrWhiteSpace($Password)) {
+        $pwdArg = '-p-'
+    }
+    else {
+        $pwdArg = '-p' + (Escape-SfdlProcessArgument $Password)
+    }
+
+    $entries = Get-SevenZipArchiveEntryNames -SevenZipExe $sevenZip -ArchivePath $ArchivePath -Password $Password
+    if ($null -eq $entries) {
+        Write-SfdlLog DEBUG "7-Zip Listing fehlgeschlagen: $(Split-Path -Leaf $ArchivePath)"
+        return $false
+    }
+    if (-not (Test-SfdlArchiveEntriesSafe -EntryNames $entries -ExtractDir $ExtractDir)) {
+        Write-SfdlLog ERROR "7-Zip abgebrochen (unsichere Pfade): $(Split-Path -Leaf $ArchivePath)"
+        return $false
+    }
+
+    $outArg = '-o' + (Escape-SfdlProcessArgument $ExtractDir)
+    $archArg = Escape-SfdlProcessArgument $ArchivePath
+    $argLine = "x -y -bsp0 -bse1 $pwdArg $outArg $archArg"
+    $result = Invoke-SfdlExternalProcess -FileName $sevenZip -Arguments $argLine
+
+    # 0 = OK, 1 = Warnung (oft trotzdem erfolgreich)
+    if ($result.ExitCode -eq 0 -or $result.ExitCode -eq 1) {
+        return $true
+    }
+
+    Write-SfdlLog DEBUG "7-Zip Fehler (Exit $($result.ExitCode)): $($result.Combined)"
+    return $false
 }
 
 function Test-SfdlExtractPathSafe {
@@ -2581,40 +2694,20 @@ function Invoke-ZipExtract {
     param(
         [string]$ArchivePath,
         [string]$ExtractDir,
-        [string]$Password = ''
+        [string]$Password = '',
+        [switch]$ForceSevenZip
     )
 
     if (-not (Test-Path -LiteralPath $ExtractDir)) {
         New-Item -ItemType Directory -Path $ExtractDir -Force | Out-Null
     }
 
-    # Passwortgeschützte ZIPs: über 7-Zip, falls vorhanden
-    if (-not [string]::IsNullOrWhiteSpace($Password)) {
-        $sevenZip = Find-SevenZipExecutable
-        if (-not $sevenZip) {
-            Write-SfdlLog WARN "ZIP mit Passwort benötigt 7-Zip (7z.exe) - übersprungen: $(Split-Path -Leaf $ArchivePath)"
-            return $false
-        }
+    $fileName = Split-Path -Leaf $ArchivePath
+    $isSplitZip = $fileName -match '(?i)\.zip\.\d+$'
 
-        $pwdArg = '-p' + (Escape-SfdlProcessArgument $Password)
-        $entries = Get-SevenZipArchiveEntryNames -SevenZipExe $sevenZip -ArchivePath $ArchivePath -Password $Password
-        if ($null -eq $entries) {
-            Write-SfdlLog DEBUG "7-Zip Listing fehlgeschlagen: $(Split-Path -Leaf $ArchivePath)"
-            return $false
-        }
-        if (-not (Test-SfdlArchiveEntriesSafe -EntryNames $entries -ExtractDir $ExtractDir)) {
-            Write-SfdlLog ERROR "7-Zip abgebrochen (unsichere Pfade): $(Split-Path -Leaf $ArchivePath)"
-            return $false
-        }
-
-        $outArg = '-o' + (Escape-SfdlProcessArgument $ExtractDir)
-        $archArg = Escape-SfdlProcessArgument $ArchivePath
-        $argLine = "x -y -bsp0 -bse1 $pwdArg $outArg $archArg"
-        $result = Invoke-SfdlExternalProcess -FileName $sevenZip -Arguments $argLine
-        if ($result.ExitCode -eq 0) { return $true }
-
-        Write-SfdlLog DEBUG "7-Zip ZIP-Fehler (Exit $($result.ExitCode)): $($result.Combined)"
-        return $false
+    # Mehrteilige 7-Zip-Volumes (.zip.001) und Passwort-ZIPs über 7za
+    if ($ForceSevenZip -or $isSplitZip -or -not [string]::IsNullOrWhiteSpace($Password)) {
+        return (Invoke-SevenZipExtract -ArchivePath $ArchivePath -ExtractDir $ExtractDir -Password $Password)
     }
 
     # Ohne Passwort: Einträge einzeln und pfadsicher extrahieren (Zip-Slip-Schutz)
@@ -2647,9 +2740,143 @@ function Invoke-ZipExtract {
         return $true
     }
     catch {
-        Write-SfdlLog ERROR "ZIP-Fehler ($($ArchivePath)): $($_.Exception.Message)"
-        return $false
+        # Fallback: ggf. dennoch mit 7za versuchen
+        Write-SfdlLog DEBUG "ZIP (.NET) fehlgeschlagen, versuche 7za: $($_.Exception.Message)"
+        return (Invoke-SevenZipExtract -ArchivePath $ArchivePath -ExtractDir $ExtractDir -Password $Password)
     }
+}
+
+function Remove-SfdlArchiveFiles {
+    param([object[]]$Files)
+
+    foreach ($file in $Files) {
+        try {
+            if (-not $file.LocalFile -or -not (Test-Path -LiteralPath $file.LocalFile)) { continue }
+            $removed = $false
+            foreach ($attempt in 1..5) {
+                try {
+                    Remove-Item -LiteralPath $file.LocalFile -Force -ErrorAction Stop
+                    $removed = $true
+                    break
+                }
+                catch {
+                    Start-Sleep -Milliseconds (150 * $attempt)
+                }
+            }
+            if ($removed) {
+                Write-SfdlLog INFO "Archiv gelöscht: $($file.FileName)"
+            }
+            else {
+                Write-SfdlLog WARN "Archiv konnte nicht gelöscht werden: $($file.FileName)"
+            }
+        }
+        catch {
+            Write-SfdlLog WARN "Archiv konnte nicht gelöscht werden ($($file.FileName)): $($_.Exception.Message)"
+        }
+    }
+}
+
+function Expand-SfdlArchiveChain {
+    param(
+        $Chain,
+        [string]$UnrarExe,
+        [System.Collections.IList]$Passwords
+    )
+
+    $extractDir = Split-Path -Parent $Chain.Master.LocalFile
+    $name = $Chain.Master.FileName
+    Write-SfdlLog INFO "Entpacke $name ($($Chain.Type)) ..."
+
+    if ($Chain.Type -eq 'Zip' -or $Chain.Type -eq 'ZipSplit') {
+        foreach ($pw in $Passwords) {
+            $ok = Invoke-ZipExtract -ArchivePath $Chain.Master.LocalFile -ExtractDir $extractDir `
+                -Password $pw -ForceSevenZip:($Chain.Type -eq 'ZipSplit')
+            if ($ok) {
+                Write-SfdlLog OK "Entpackt: $name"
+                return $true
+            }
+            if ([string]::IsNullOrWhiteSpace($pw) -and $Passwords.Count -eq 1) { break }
+        }
+    }
+    else {
+        if (-not $UnrarExe) {
+            Write-SfdlLog WARN "unrar.exe fehlt - übersprungen: $name"
+            return $false
+        }
+        foreach ($pw in $Passwords) {
+            if (Invoke-UnrarExtract -UnrarExe $UnrarExe -ArchivePath $Chain.Master.LocalFile `
+                    -ExtractDir $extractDir -Password $pw) {
+                Write-SfdlLog OK "Entpackt: $name"
+                return $true
+            }
+        }
+    }
+
+    Write-SfdlLog ERROR "Entpacken fehlgeschlagen: $name"
+    return $false
+}
+
+function Get-SfdlDiskArchiveItems {
+    param([string[]]$RootDirs)
+
+    $list = New-Object System.Collections.Generic.List[object]
+    $seen = @{}
+
+    foreach ($root in @($RootDirs)) {
+        $rootPath = [string]$root
+        if ([string]::IsNullOrWhiteSpace($rootPath) -or -not (Test-Path -LiteralPath $rootPath)) { continue }
+
+        $files = @(Get-ChildItem -LiteralPath $rootPath -Recurse -File -ErrorAction SilentlyContinue)
+        foreach ($file in $files) {
+            if ($null -eq $file) { continue }
+            $ext = [string]$file.Extension
+            if ([string]::IsNullOrEmpty($ext)) { continue }
+
+            $isArchive =
+                $ext.Equals('.zip', [StringComparison]::OrdinalIgnoreCase) -or
+                $ext.Equals('.rar', [StringComparison]::OrdinalIgnoreCase) -or
+                ($ext -match '^\.r\d{1,2}$') -or
+                ([string]$file.Name -match '(?i)\.zip\.\d+$')
+            if (-not $isArchive) { continue }
+
+            $full = [string]$file.FullName
+            if ($seen.ContainsKey($full)) { continue }
+            $seen[$full] = $true
+
+            [void]$list.Add([pscustomobject]@{
+                FileName       = [string]$file.Name
+                LocalFile      = $full
+                FileSize       = 0L
+                Status         = 'Completed'
+                PackageName    = [string]$file.DirectoryName
+                SizeDownloaded = [long]$file.Length
+                FirstUnRarFile = $false
+                HashType       = 'None'
+                FileHash       = ''
+            })
+        }
+    }
+
+    return ,$list
+}
+
+function Get-SfdlExtractScanRoots {
+    param([System.Collections.IList]$Items)
+
+    $roots = @{}
+    foreach ($item in @($Items)) {
+        if ($null -eq $item -or -not (Test-SfdlHasProperty -Object $item -Name 'LocalFile')) { continue }
+        if ([string]::IsNullOrWhiteSpace([string]$item.LocalFile)) { continue }
+        $dir = [string](Split-Path -Parent $item.LocalFile)
+        if (-not [string]::IsNullOrWhiteSpace($dir)) {
+            $roots[$dir] = $true
+        }
+    }
+    $result = New-Object System.Collections.ArrayList
+    foreach ($k in $roots.Keys) {
+        [void]$result.Add([string]$k)
+    }
+    return , @($result.ToArray())
 }
 
 function Start-SfdlUnrar {
@@ -2661,93 +2888,94 @@ function Start-SfdlUnrar {
         [switch]$DeleteAfterUnRar
     )
 
-    $chains = Get-UnrarChains -Items $Items
-    if ($null -eq $chains -or $chains.Count -eq 0) {
-        Write-SfdlLog INFO 'Keine RAR-/ZIP-Archive gefunden.'
-        return
-    }
-
-    $rarChains = @($chains | Where-Object { $_.Type -eq 'Rar' })
-
-    if ($rarChains.Count -gt 0 -and -not $UnrarExe) {
-        Write-SfdlLog WARN 'unrar.exe nicht gefunden - RAR-Entpacken übersprungen (ZIP wird trotzdem versucht).'
-    }
-
     $passwords = New-Object System.Collections.Generic.List[string]
     if (-not [string]::IsNullOrWhiteSpace($Password)) { $passwords.Add($Password) }
     foreach ($p in $PasswordList) {
         if ($p -and $passwords -notcontains $p) { $passwords.Add($p) }
     }
-    # leeres Passwort zuerst
     $passwords.Insert(0, '')
 
-    foreach ($chain in $chains) {
-        if (-not (Test-UnrarChainComplete -Chain $chain)) {
-            Write-SfdlLog WARN "Archiv unvollständig: $($chain.Master.FileName)"
-            continue
-        }
+    $chains = Get-UnrarChains -Items $Items
+    $rarChains = @($chains | Where-Object { (Test-SfdlHasProperty -Object $_ -Name 'Type') -and $_.Type -eq 'Rar' })
+    $zipSplitChains = @($chains | Where-Object { (Test-SfdlHasProperty -Object $_ -Name 'Type') -and $_.Type -eq 'ZipSplit' })
+    if ($rarChains.Count -gt 0 -and -not $UnrarExe) {
+        Write-SfdlLog WARN 'unrar.exe nicht gefunden - RAR-Entpacken übersprungen (ZIP wird trotzdem versucht).'
+    }
+    if ($zipSplitChains.Count -gt 0 -and -not (Find-SevenZipExecutable)) {
+        Write-SfdlLog WARN '7za.exe nicht gefunden - mehrteilige ZIP-Archive (.zip.001) werden übersprungen.'
+    }
 
-        $extractDir = Split-Path -Parent $chain.Master.LocalFile
-        Write-SfdlLog INFO "Entpacke $($chain.Master.FileName) ($($chain.Type)) ..."
-
-        $done = $false
-        if ($chain.Type -eq 'Zip') {
-            foreach ($pw in $passwords) {
-                if (Invoke-ZipExtract -ArchivePath $chain.Master.LocalFile -ExtractDir $extractDir -Password $pw) {
-                    Write-SfdlLog OK "Entpackt: $($chain.Master.FileName)"
-                    $done = $true
-                    break
-                }
-                # Ohne Passwort nur einmal versuchen
-                if ([string]::IsNullOrWhiteSpace($pw) -and $passwords.Count -eq 1) { break }
+    if ($null -eq $chains -or $chains.Count -eq 0) {
+        Write-SfdlLog INFO 'Keine RAR-/ZIP-Archive in den Downloads gefunden.'
+    }
+    else {
+        foreach ($chain in $chains) {
+            if (-not (Test-SfdlHasProperty -Object $chain -Name 'Master')) { continue }
+            if (-not (Test-UnrarChainComplete -Chain $chain)) {
+                Write-SfdlLog WARN "Archiv unvollständig: $($chain.Master.FileName)"
+                continue
+            }
+            if (Expand-SfdlArchiveChain -Chain $chain -UnrarExe $UnrarExe -Passwords $passwords) {
+                Remove-SfdlArchiveFiles -Files (@($chain.Master) + @($chain.Members))
             }
         }
-        else {
-            if (-not $UnrarExe) { continue }
-            foreach ($pw in $passwords) {
-                if (Invoke-UnrarExtract -UnrarExe $UnrarExe -ArchivePath $chain.Master.LocalFile `
-                        -ExtractDir $extractDir -Password $pw) {
-                    Write-SfdlLog OK "Entpackt: $($chain.Master.FileName)"
-                    $done = $true
-                    break
-                }
+    }
+
+    # Verschachtelte Archive: nach dem Entpacken erneut scannen, entpacken, löschen
+    $scanRoots = @()
+    foreach ($r in @(Get-SfdlExtractScanRoots -Items $Items)) {
+        $rootPath = [string]$r
+        if (-not [string]::IsNullOrWhiteSpace($rootPath)) {
+            $scanRoots += $rootPath
+        }
+    }
+    if ($scanRoots.Count -eq 0) { return }
+
+    $failed = @{}
+    $maxRounds = 20
+
+    for ($round = 1; $round -le $maxRounds; $round++) {
+        $diskList = Get-SfdlDiskArchiveItems -RootDirs ([string[]]$scanRoots)
+        if ($null -eq $diskList -or $diskList.Count -eq 0) { break }
+
+        $allNested = Get-UnrarChains -Items $diskList
+        $nestedChains = @()
+        if ($null -ne $allNested) {
+            foreach ($cand in $allNested) {
+                if (-not (Test-SfdlHasProperty -Object $cand -Name 'Master')) { continue }
+                $path = [string]$cand.Master.LocalFile
+                if ([string]::IsNullOrWhiteSpace($path)) { continue }
+                if ($failed.ContainsKey($path)) { continue }
+                if (-not (Test-Path -LiteralPath $path)) { continue }
+                $nestedChains += $cand
             }
         }
 
-        if (-not $done) {
-            Write-SfdlLog ERROR "Entpacken fehlgeschlagen: $($chain.Master.FileName)"
-            continue
+        if ($nestedChains.Count -eq 0) { break }
+
+        Write-SfdlLog INFO ("Verschachtelte Archive – Runde {0}: {1} Archiv(e)" -f $round, $nestedChains.Count)
+
+        $progress = $false
+        foreach ($chain in $nestedChains) {
+            $masterPath = [string]$chain.Master.LocalFile
+            if (-not (Test-Path -LiteralPath $masterPath)) { continue }
+
+            if (-not (Test-UnrarChainComplete -Chain $chain)) {
+                Write-SfdlLog WARN "Archiv unvollständig: $($chain.Master.FileName)"
+                $failed[$masterPath] = $true
+                continue
+            }
+
+            if (Expand-SfdlArchiveChain -Chain $chain -UnrarExe $UnrarExe -Passwords $passwords) {
+                Remove-SfdlArchiveFiles -Files (@($chain.Master) + @($chain.Members))
+                $progress = $true
+            }
+            else {
+                $failed[$masterPath] = $true
+            }
         }
 
-        # Nach erfolgreichem Entpacken Archivdateien immer entfernen
-        $toDelete = @($chain.Master) + @($chain.Members)
-        foreach ($file in $toDelete) {
-            try {
-                if ($file.LocalFile -and (Test-Path -LiteralPath $file.LocalFile)) {
-                    # ZIP ggf. kurz freigeben (Antivirus/Indexer)
-                    $removed = $false
-                    foreach ($attempt in 1..5) {
-                        try {
-                            Remove-Item -LiteralPath $file.LocalFile -Force -ErrorAction Stop
-                            $removed = $true
-                            break
-                        }
-                        catch {
-                            Start-Sleep -Milliseconds (150 * $attempt)
-                        }
-                    }
-                    if ($removed) {
-                        Write-SfdlLog INFO "Archiv gelöscht: $($file.FileName)"
-                    }
-                    else {
-                        Write-SfdlLog WARN "Archiv konnte nicht gelöscht werden: $($file.FileName)"
-                    }
-                }
-            }
-            catch {
-                Write-SfdlLog WARN "Archiv konnte nicht gelöscht werden ($($file.FileName)): $($_.Exception.Message)"
-            }
-        }
+        if (-not $progress) { break }
     }
 }
 
