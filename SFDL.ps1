@@ -353,44 +353,106 @@ Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action {
 # ---------------------------------------------------------------------------
 # Logging / Konsolen-Kodierung
 # ---------------------------------------------------------------------------
-function Initialize-SfdlConsoleEncoding {
-    # Umlaute (ä/ö/ü/ß) korrekt ausgeben.
-    #
-    # Windows PowerShell 5.1: Die Konsole läuft typischerweise auf OEM (z. B. CP850)
-    # bzw. der Parent-Terminal decodiert Bytes als ANSI (CP1252). Wenn man hier
-    # OutputEncoding/Codepage auf UTF-8 (65001) umstellt, entstehen Mojibake wie
-    # "gelöscht" -> "gelÃ¶scht", sobald die Ausgabe über den Byte-Stream geht
-    # (umgeleitete Hosts, ConPTY-Capture, Pipeline). Write-Host nutzt WriteConsoleW
-    # und rendert Unicode unabhängig von der OEM-Codepage korrekt - deshalb die
-    # aktive Codepage belassen und $OutputEncoding nur daran ausrichten.
-    #
-    # PowerShell 7+: UTF-8 ist der Standard und wird konsistent gesetzt.
-
-    if ($PSVersionTable.PSVersion.Major -ge 6) {
-        $utf8 = New-Object System.Text.UTF8Encoding $false
-        try { [Console]::OutputEncoding = $utf8 } catch { }
-        try { [Console]::InputEncoding = $utf8 } catch { }
-        try { $script:OutputEncoding = $utf8 } catch { }
-        try { $global:OutputEncoding = $utf8 } catch { }
-        try { $OutputEncoding = $utf8 } catch { }
-        try {
-            $PSDefaultParameterValues['Out-File:Encoding'] = 'utf8'
-            $PSDefaultParameterValues['Set-Content:Encoding'] = 'utf8'
-            $PSDefaultParameterValues['Add-Content:Encoding'] = 'utf8'
-            $PSDefaultParameterValues['Export-Csv:Encoding'] = 'utf8'
-        }
-        catch { }
-        return
-    }
-
+function Initialize-SfdlNativeConsole {
+    if ('SfdlNative.ConsoleIo' -as [type]) { return }
     try {
-        $enc = [Console]::OutputEncoding
-        if ($null -eq $enc) { $enc = [Text.Encoding]::Default }
-        try { $script:OutputEncoding = $enc } catch { }
-        try { $global:OutputEncoding = $enc } catch { }
-        try { $OutputEncoding = $enc } catch { }
+        Add-Type -Namespace SfdlNative -Name ConsoleIo -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+public static extern System.IntPtr GetStdHandle(int nStdHandle);
+[System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+public static extern bool GetConsoleMode(System.IntPtr hConsoleHandle, out uint lpMode);
+[System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+public static extern bool SetConsoleMode(System.IntPtr hConsoleHandle, uint dwMode);
+[System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+public static extern bool SetConsoleOutputCP(uint wCodePageID);
+[System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+public static extern bool SetConsoleCP(uint wCodePageID);
+[System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+public static extern bool WriteConsoleW(System.IntPtr hConsoleOutput, string lpBuffer, uint nNumberOfCharsToWrite, out uint lpNumberOfCharsWritten, System.IntPtr lpReserved);
+'@ -ErrorAction Stop
     }
     catch { }
+}
+
+function Test-SfdlScriptEncoding {
+    # PowerShell 5.1 liest .ps1 ohne UTF-8-BOM als System-ANSI (CP1252).
+    # Dann wird UTF-8 "oe" zu zwei Zeichen (Mojibake). Canary muss U+00F6 sein.
+    $canary = "ö"
+    if ($canary.Length -ne 1 -or [int][char]$canary[0] -ne 0x00F6) {
+        $cps = [string]::Join(',', ($canary.ToCharArray() | ForEach-Object { 'U+{0:X4}' -f [int]$_ }))
+        throw ("SFDL.ps1 wurde nicht als UTF-8 geladen. Unter Windows PowerShell 5.1 muss die Datei als UTF-8 MIT BOM gespeichert sein. Aktuell: Length={0}, Codepoint(s)={1}" -f $canary.Length, $cps)
+    }
+}
+
+function Initialize-SfdlConsoleEncoding {
+    # Einheitlich UTF-8: Windows Terminal / ConPTY / VS Code erwarten UTF-8-Bytes
+    # auf dem umgeleiteten stdout. Klassische Konsolen bekommen WriteConsoleW
+    # (Unicode) in Write-SfdlHostLine.
+    Initialize-SfdlNativeConsole
+
+    $utf8 = New-Object System.Text.UTF8Encoding $false
+    $script:SfdlUtf8NoBom = $utf8
+
+    if ('SfdlNative.ConsoleIo' -as [type]) {
+        try { [void][SfdlNative.ConsoleIo]::SetConsoleOutputCP(65001) } catch { }
+        try { [void][SfdlNative.ConsoleIo]::SetConsoleCP(65001) } catch { }
+
+        try {
+            $script:SfdlStdOutHandle = [SfdlNative.ConsoleIo]::GetStdHandle(-11)
+            $mode = [uint32]0
+            $script:SfdlHasRealConsole = [SfdlNative.ConsoleIo]::GetConsoleMode($script:SfdlStdOutHandle, [ref]$mode)
+            if ($script:SfdlHasRealConsole) {
+                # VT-Sequenzen fuer Farben, falls stdout doch ueber Byte-Stream geht
+                $ENABLE_VIRTUAL_TERMINAL_PROCESSING = [uint32]0x0004
+                try { [void][SfdlNative.ConsoleIo]::SetConsoleMode($script:SfdlStdOutHandle, ($mode -bor $ENABLE_VIRTUAL_TERMINAL_PROCESSING)) } catch { }
+            }
+        }
+        catch {
+            $script:SfdlHasRealConsole = $false
+            $script:SfdlStdOutHandle = [IntPtr]::Zero
+        }
+    }
+    else {
+        $script:SfdlHasRealConsole = $false
+        $script:SfdlStdOutHandle = [IntPtr]::Zero
+    }
+
+    try { [Console]::OutputEncoding = $utf8 } catch { }
+    try { [Console]::InputEncoding = $utf8 } catch { }
+    try { $script:OutputEncoding = $utf8 } catch { }
+    try { $global:OutputEncoding = $utf8 } catch { }
+    try { $OutputEncoding = $utf8 } catch { }
+
+    try {
+        $PSDefaultParameterValues['Out-File:Encoding'] = 'utf8'
+        $PSDefaultParameterValues['Set-Content:Encoding'] = 'utf8'
+        $PSDefaultParameterValues['Add-Content:Encoding'] = 'utf8'
+        $PSDefaultParameterValues['Export-Csv:Encoding'] = 'utf8'
+    }
+    catch { }
+}
+
+function Get-SfdlAnsiForegroundCode {
+    param([ConsoleColor]$ForegroundColor)
+    switch ($ForegroundColor) {
+        ([ConsoleColor]::Black)       { return 30 }
+        ([ConsoleColor]::DarkBlue)    { return 34 }
+        ([ConsoleColor]::DarkGreen)   { return 32 }
+        ([ConsoleColor]::DarkCyan)    { return 36 }
+        ([ConsoleColor]::DarkRed)     { return 31 }
+        ([ConsoleColor]::DarkMagenta) { return 35 }
+        ([ConsoleColor]::DarkYellow)  { return 33 }
+        ([ConsoleColor]::Gray)        { return 37 }
+        ([ConsoleColor]::DarkGray)    { return 90 }
+        ([ConsoleColor]::Blue)        { return 94 }
+        ([ConsoleColor]::Green)       { return 92 }
+        ([ConsoleColor]::Cyan)        { return 96 }
+        ([ConsoleColor]::Red)         { return 91 }
+        ([ConsoleColor]::Magenta)     { return 95 }
+        ([ConsoleColor]::Yellow)      { return 93 }
+        ([ConsoleColor]::White)       { return 97 }
+        default                       { return 37 }
+    }
 }
 
 function Write-SfdlHostLine {
@@ -401,23 +463,42 @@ function Write-SfdlHostLine {
         [ConsoleColor]$ForegroundColor = [ConsoleColor]::Gray
     )
 
-    # Write-Host nutzt die Unicode-Host-API (WriteConsoleW) und stellt Umlaute
-    # unabhängig von der OEM-Codepage korrekt dar, sofern die Schriftart sie kann.
+    if ($null -eq $Text) { $Text = '' }
+    $line = $Text + [Environment]::NewLine
+
+    # 1) Echte Konsole: WriteConsoleW (UTF-16) - unabhängig von OEM/ANSI-Codepage
+    if ($script:SfdlHasRealConsole -and $script:SfdlStdOutHandle -ne [IntPtr]::Zero -and ('SfdlNative.ConsoleIo' -as [type])) {
+        $prev = $null
+        try {
+            try { $prev = [Console]::ForegroundColor } catch { }
+            try { [Console]::ForegroundColor = $ForegroundColor } catch { }
+            $written = [uint32]0
+            $ok = [SfdlNative.ConsoleIo]::WriteConsoleW($script:SfdlStdOutHandle, $line, [uint32]$line.Length, [ref]$written, [IntPtr]::Zero)
+            if ($ok) { return }
+        }
+        finally {
+            if ($null -ne $prev) {
+                try { [Console]::ForegroundColor = $prev } catch { }
+            }
+        }
+    }
+
+    # 2) Umgeleitet (Windows Terminal / ConPTY / Pipe): UTF-8-Bytes + VT-Farbe
     try {
-        Write-Host $Text -ForegroundColor $ForegroundColor
+        $utf8 = if ($script:SfdlUtf8NoBom) { $script:SfdlUtf8NoBom } else { New-Object System.Text.UTF8Encoding $false }
+        $esc = [char]27
+        $code = Get-SfdlAnsiForegroundCode -ForegroundColor $ForegroundColor
+        $payload = '{0}[{1}m{2}{0}[0m{3}' -f $esc, $code, $Text, [Environment]::NewLine
+        $bytes = $utf8.GetBytes($payload)
+        $stdout = [Console]::OpenStandardOutput()
+        $stdout.Write($bytes, 0, $bytes.Length)
         return
     }
     catch { }
 
+    # 3) Fallback
     try {
-        $prev = [Console]::ForegroundColor
-        try {
-            [Console]::ForegroundColor = $ForegroundColor
-            [Console]::Out.WriteLine($Text)
-        }
-        finally {
-            try { [Console]::ForegroundColor = $prev } catch { }
-        }
+        Write-Host $Text -ForegroundColor $ForegroundColor
     }
     catch {
         try { [Console]::WriteLine($Text) } catch { Write-Output $Text }
@@ -3038,6 +3119,7 @@ function Show-DownloadItemTable {
 
 try {
     Initialize-SfdlConsoleEncoding
+    Test-SfdlScriptEncoding
 
     $sfdlPath = (Resolve-Path -LiteralPath $SfdlFile).Path
     Write-SfdlLog INFO "SFDL.PS PowerShell - $sfdlPath"
