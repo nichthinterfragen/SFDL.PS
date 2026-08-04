@@ -1800,6 +1800,62 @@ function Write-SfdlDownloadProgress {
     return $linesWritten
 }
 
+function Write-SfdlDownloadSummary {
+    param(
+        [System.Collections.IList]$Items,
+        [datetime]$StartedAt,
+        [bool]$Cancelled = $false
+    )
+
+    $totalBytes = 0L
+    $downloadedBytes = 0L
+    $completed = 0
+    $stopped = 0
+    $failed = 0
+    $other = 0
+
+    foreach ($item in $Items) {
+        $totalBytes += [long]$item.FileSize
+        $downloadedBytes += [long]$item.SizeDownloaded
+        switch ([string]$item.Status) {
+            'Completed' { $completed++ }
+            'AlreadyDownloaded' { $completed++ }
+            'Stopped' { $stopped++ }
+            'Failed' { $failed++ }
+            default { $other++ }
+        }
+    }
+
+    $remaining = [Math]::Max([long]0, $totalBytes - $downloadedBytes)
+    $percent = if ($totalBytes -gt 0) {
+        [Math]::Round(100.0 * $downloadedBytes / $totalBytes, 1)
+    }
+    else { 0 }
+    $elapsedSec = [Math]::Max(0, ((Get-Date) - $StartedAt).TotalSeconds)
+    $elapsedText = ConvertTo-Hms $elapsedSec
+    $avgSpeed = if ($elapsedSec -gt 0) { $downloadedBytes / $elapsedSec } else { 0 }
+
+    Write-SfdlHostLine -Text ''
+    if ($Cancelled) {
+        Write-SfdlLog WARN ("Download abgebrochen nach {0}." -f $elapsedText)
+    }
+    else {
+        Write-SfdlLog OK ("Download fertig nach {0}." -f $elapsedText)
+    }
+
+    Write-SfdlLog INFO ("Geladen:      {0} / {1}  ({2}%)" -f `
+        (Format-ByteSize $downloadedBytes),
+        (Format-ByteSize $totalBytes),
+        $percent)
+    Write-SfdlLog INFO ("Verbleibend:  {0}" -f (Format-ByteSize $remaining))
+    Write-SfdlLog INFO ("Dateien:      Fertig {0}, Gestoppt {1}, Fehler {2}" -f `
+        $completed, $stopped, $failed)
+    if ($other -gt 0) {
+        Write-SfdlLog INFO ("               Offen/sonstige: {0}" -f $other)
+    }
+    Write-SfdlLog INFO ("Durchschnitt: {0}" -f (Format-Speed $avgSpeed))
+}
+
 function Start-SfdlDownloads {
     param(
         $Connection,
@@ -2165,6 +2221,7 @@ function Invoke-FtpFileDownload {
 
     $pool = $null
     $workers = @()
+    $dashboardLines = 0
 
     try {
         $pool = [runspacefactory]::CreateRunspacePool(1, $MaxThreads)
@@ -2187,7 +2244,6 @@ function Invoke-FtpFileDownload {
             $workers += [pscustomobject]@{ Id = $workerId; Pipe = $ps; Handle = $ps.BeginInvoke() }
         }
 
-        $dashboardLines = 0
         Write-SfdlHostLine -Text ''
 
         while ($true) {
@@ -2319,25 +2375,33 @@ function Invoke-FtpFileDownload {
 
     # Laufende Items auf Stopped setzen, falls Abbruch
     if ($wasCancelled) {
+        $stoppedNow = 0
         foreach ($item in $tracked) {
             if ($item.Status -eq 'Running' -or $item.Status -eq 'Pending') {
                 $item.Status = 'Stopped'
                 $item.BytesPerSecond = 0
                 $item.Speed = ''
+                $stoppedNow++
             }
+        }
+        if ($stoppedNow -gt 0) {
+            [System.Threading.Monitor]::Enter($stats.Lock)
+            try { $stats.Stopped += $stoppedNow }
+            finally { [System.Threading.Monitor]::Exit($stats.Lock) }
         }
     }
 
-    Write-SfdlHostLine -Text ''
-    $elapsedFinal = ConvertTo-Hms ((Get-Date) - $startedAt).TotalSeconds
-    if ($wasCancelled) {
-        Write-SfdlLog WARN ("Download abgebrochen nach {0}. Fertig: {1}, Gestoppt: {2}, Fehler: {3}" -f `
-            $elapsedFinal, $stats.Completed, $stats.Stopped, $stats.Failed)
+    # Letztes Fortschritts-Dashboard stehen lassen / finalisieren, dann Text-Zusammenfassung
+    try {
+        $completedFinal = @($tracked | Where-Object { $_.Status -in @('Completed', 'AlreadyDownloaded') }).Count
+        $failedFinal = @($tracked | Where-Object { $_.Status -eq 'Failed' }).Count
+        [void](Write-SfdlDownloadProgress -TrackedItems $tracked -StartedAt $startedAt `
+            -TotalFiles $total -CompletedFiles $completedFinal -FailedFiles $failedFinal `
+            -BaselineDownloaded $baselineDownloaded -DashboardLines $dashboardLines -Final:$true)
     }
-    else {
-        Write-SfdlLog OK ("Download fertig: {0} OK, {1} fehlgeschlagen, Dauer: {2}" -f `
-            $stats.Completed, $stats.Failed, $elapsedFinal)
-    }
+    catch { }
+
+    Write-SfdlDownloadSummary -Items $tracked -StartedAt $startedAt -Cancelled:$wasCancelled
 
     return (-not $wasCancelled)
 }
@@ -3178,8 +3242,7 @@ try {
     $stopped = Get-Date
 
     if (-not $downloadOk) {
-        $stoppedCount = @($items | Where-Object { $_.Status -eq 'Stopped' }).Count
-        Write-SfdlLog WARN ("Download abgebrochen ({0} Datei(en) gestoppt). Session bleibt aktiv." -f $stoppedCount)
+        Write-SfdlLog WARN 'Session bleibt aktiv - Download kann fortgesetzt werden.'
         Complete-SfdlScript -ExitCode 130
         return
     }
