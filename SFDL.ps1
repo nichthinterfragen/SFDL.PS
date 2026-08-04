@@ -265,7 +265,7 @@ function Complete-SfdlScript {
     param([int]$ExitCode = 0)
     try { $global:LASTEXITCODE = $ExitCode } catch { }
 
-    # 130 = Benutzerabbruch: niemals exit – das schließt interaktive Sessions.
+    # 130 = Benutzerabbruch: niemals exit - das schließt interaktive Sessions.
     if ($ExitCode -eq 130) { return }
 
     # Andere Fehlercodes nur bei Non-Interactive an den Prozess durchreichen.
@@ -359,9 +359,9 @@ function Initialize-SfdlConsoleEncoding {
     # Windows PowerShell 5.1: Die Konsole läuft typischerweise auf OEM (z. B. CP850)
     # bzw. der Parent-Terminal decodiert Bytes als ANSI (CP1252). Wenn man hier
     # OutputEncoding/Codepage auf UTF-8 (65001) umstellt, entstehen Mojibake wie
-    # "gelöscht" → "gelÃ¶scht", sobald die Ausgabe über den Byte-Stream geht
+    # "gelöscht" -> "gelÃ¶scht", sobald die Ausgabe über den Byte-Stream geht
     # (umgeleitete Hosts, ConPTY-Capture, Pipeline). Write-Host nutzt WriteConsoleW
-    # und rendert Unicode unabhängig von der OEM-Codepage korrekt – deshalb die
+    # und rendert Unicode unabhängig von der OEM-Codepage korrekt - deshalb die
     # aktive Codepage belassen und $OutputEncoding nur daran ausrichten.
     #
     # PowerShell 7+: UTF-8 ist der Standard und wird konsistent gesetzt.
@@ -555,7 +555,7 @@ function Test-SfdlPassword {
         [string]$EncryptedHost,
         [string]$Password
     )
-    # Leerer Ciphertext darf kein Passwort „erfolgreich“ machen
+    # Leerer Ciphertext darf kein Passwort "erfolgreich" machen
     if ([string]::IsNullOrWhiteSpace($EncryptedHost)) { return $false }
     if ($null -eq $Password) { return $false }
     try {
@@ -697,10 +697,10 @@ function ConvertFrom-SfdlDataConnectionType {
 function ConvertFrom-SfdlSslProtocol {
     param([string]$Value, [bool]$IsV2EncryptionMode = $false)
     if ($IsV2EncryptionMode) {
-        # v2 EncryptionMode → v3 SSLProtocol mapping (Converter.vb)
+        # v2 EncryptionMode -> v3 SSLProtocol mapping (Converter.vb)
         switch ($Value) {
             'Implicit' { return 'Tls' }   # FtpES
-            'Explicit' { return 'Tls' }   # früher Ssl3 – auf modernen Windows-Systemen tot
+            'Explicit' { return 'Tls' }   # früher Ssl3 - auf modernen Windows-Systemen tot
             default    { return 'None' }
         }
     }
@@ -1096,7 +1096,7 @@ function Parse-FtpListLine {
 
 function Test-FtpPathIsDirectory {
     param($Connection, [string]$RemotePath)
-    # SIZE erfolgreich → Datei; sonst LIST versuchen → Verzeichnis
+    # SIZE erfolgreich -> Datei; sonst LIST versuchen -> Verzeichnis
     try {
         $req = New-FtpRequest -Connection $Connection -RemotePath $RemotePath `
             -Method ([System.Net.WebRequestMethods+Ftp]::GetFileSize)
@@ -1481,7 +1481,7 @@ function Invoke-FtpFileDownload {
             }
         }
         elseif ($Item.FileSize -gt 0 -and $existing -gt $Item.FileSize) {
-            # Lokale Datei größer als erwartet → neu beginnen
+            # Lokale Datei größer als erwartet -> neu beginnen
             $restart = 0L
             $fileMode = [IO.FileMode]::Create
             $Item.SizeDownloaded = 0
@@ -1492,7 +1492,7 @@ function Invoke-FtpFileDownload {
             $Item.SizeDownloaded = $existing
         }
         elseif ($Item.FileSize -eq 0 -and $existing -gt 0) {
-            # Unbekannte Remote-Größe: kein Resume (REST unsicher → Duplikat-Risiko)
+            # Unbekannte Remote-Größe: kein Resume (REST unsicher -> Duplikat-Risiko)
             $restart = 0L
             $fileMode = [IO.FileMode]::Create
             $Item.SizeDownloaded = 0
@@ -2215,7 +2215,7 @@ function Invoke-FtpFileDownload {
 
             foreach ($w in $workers) {
                 try {
-                    # Nach Stop() kein EndInvoke – das hängt/crasht in PS 5.1 häufig.
+                    # Nach Stop() kein EndInvoke - das hängt/crasht in PS 5.1 häufig.
                     # Stattdessen kurz auf Completion warten, dann Dispose.
                     if ($w.Handle -and -not $w.Handle.IsCompleted -and $w.Handle.AsyncWaitHandle) {
                         try { [void]$w.Handle.AsyncWaitHandle.WaitOne(500) } catch { }
@@ -2953,7 +2953,7 @@ function Start-SfdlUnrar {
 
         if ($nestedChains.Count -eq 0) { break }
 
-        Write-SfdlLog INFO ("Verschachtelte Archive – Runde {0}: {1} Archiv(e)" -f $round, $nestedChains.Count)
+        Write-SfdlLog INFO ("Verschachtelte Archive - Runde {0}: {1} Archiv(e)" -f $round, $nestedChains.Count)
 
         $progress = $false
         foreach ($chain in $nestedChains) {
